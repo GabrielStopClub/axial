@@ -13,6 +13,9 @@
   <!-- Babel Standalone para compilar JSX no browser -->
   <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
 
+  <!-- Supabase SDK -->
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+
   <style>
     html, body { margin: 0; padding: 0; height: 100%; }
     body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: #F9FAFB; }
@@ -112,6 +115,10 @@ const ICON_PATHS = {
   'users': '<path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   'wrench': '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
   'x': '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  'shield': '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+  'eye': '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+  'lock': '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  'log-out': '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
 };
 
 function LucideIcon({ name, size = 24, color = 'currentColor', strokeWidth = 2, style, ...rest }) {
@@ -165,6 +172,10 @@ const Truck          = (p) => <LucideIcon name="truck" {...p} />;
 const Users          = (p) => <LucideIcon name="users" {...p} />;
 const Wrench         = (p) => <LucideIcon name="wrench" {...p} />;
 const X              = (p) => <LucideIcon name="x" {...p} />;
+const Shield         = (p) => <LucideIcon name="shield" {...p} />;
+const Eye            = (p) => <LucideIcon name="eye" {...p} />;
+const Lock           = (p) => <LucideIcon name="lock" {...p} />;
+const LogOut         = (p) => <LucideIcon name="log-out" {...p} />;
 // ============================================================
 // Firebase removido nesta versão.
 // O envio agora gera PDF + abre WhatsApp (sem backend).
@@ -378,12 +389,440 @@ const LOCAL_FIXO = 'RJ - Recomposição Iguá / Zona Oeste';
 // COMPONENTE PRINCIPAL
 // ============================================================
 
+// ============================================================
+// CONFIG ADMIN + DADOS MOCKADOS PARA O PROTÓTIPO
+// ============================================================
+const SENHA_ADMIN = 'axial@2026';
+
+// ============================================================
+// CONFIGURAÇÃO DO SUPABASE
+// ============================================================
+const SUPABASE_URL = 'https://gtzfzbdzmvqnrlolsusz.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_CdDsifjMybrPVHCMWnfdrg_5TDeQI-9';
+
+// Flag pra ativar/desativar mocks. true = usa mocks fake, false = usa Supabase de verdade
+const USAR_MOCKS = false;
+
+// Cliente Supabase (a SDK é carregada via CDN como window.supabase)
+const supabaseClient = (typeof window !== 'undefined' && window.supabase)
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
+  : null;
+
+// ============================================================
+// HELPERS DE INTEGRAÇÃO COM SUPABASE
+// ============================================================
+
+// Converte uma data URL base64 (ex: foto tirada pelo celular) num Blob
+// pra fazer upload eficiente no Storage
+function dataUrlParaBlob(dataUrl) {
+  const partes = dataUrl.split(',');
+  const mime = partes[0].match(/:(.*?);/)?.[1] || 'image/jpeg';
+  const bin = atob(partes[1]);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
+
+// Gera um nome único pra arquivo de foto
+function gerarNomeArquivoFoto(extensao) {
+  const ts = Date.now();
+  const rand = Math.random().toString(36).slice(2, 10);
+  return `foto_${ts}_${rand}.${extensao || 'jpg'}`;
+}
+
+// Sobe uma foto (data URL base64) pro Storage e retorna a URL pública.
+// Se for uma URL http(s) já (foto já existente), retorna ela mesma.
+async function subirFotoParaStorage(fotoDataUrlOuUrl) {
+  if (!fotoDataUrlOuUrl) return null;
+  // Se já é URL pública (foto vinda de checklist antigo, por ex.), retorna direto
+  if (fotoDataUrlOuUrl.startsWith('http://') || fotoDataUrlOuUrl.startsWith('https://')) {
+    return fotoDataUrlOuUrl;
+  }
+  // Se for SVG inline (assinatura fake dos mocks, ou assinatura real), também sobe
+  if (!fotoDataUrlOuUrl.startsWith('data:')) return null;
+
+  const blob = dataUrlParaBlob(fotoDataUrlOuUrl);
+  const ext = blob.type.includes('png') ? 'png' : blob.type.includes('svg') ? 'svg' : 'jpg';
+  const nome = gerarNomeArquivoFoto(ext);
+
+  const { data, error } = await supabaseClient.storage
+    .from('fotos')
+    .upload(nome, blob, { contentType: blob.type, upsert: false });
+
+  if (error) {
+    console.error('Erro ao subir foto:', error);
+    throw new Error('Não foi possível subir uma foto: ' + error.message);
+  }
+
+  // Pega URL pública
+  const { data: urlData } = supabaseClient.storage.from('fotos').getPublicUrl(data.path);
+  return urlData.publicUrl;
+}
+
+// Salva o checklist completo no Supabase
+async function salvarChecklistNoSupabase(dados) {
+  if (!supabaseClient) throw new Error('Supabase não inicializado');
+
+  // Sobe fotos primeiro (em paralelo, com Promise.all)
+  let fotosUrls = [];
+  if (Array.isArray(dados.fotos) && dados.fotos.length > 0) {
+    fotosUrls = await Promise.all(dados.fotos.map(f => subirFotoParaStorage(f)));
+    fotosUrls = fotosUrls.filter(Boolean);
+  }
+
+  // Sobe fotosItens (objeto idx -> dataUrl) — usado no checklist de veículo
+  let fotosItensUrls = {};
+  if (dados.fotosItens && typeof dados.fotosItens === 'object') {
+    const entries = Object.entries(dados.fotosItens);
+    const urls = await Promise.all(entries.map(([k, v]) => subirFotoParaStorage(v)));
+    entries.forEach(([k], i) => {
+      if (urls[i]) fotosItensUrls[k] = urls[i];
+    });
+  }
+
+  // Sobe assinatura como foto também (é uma dataURL PNG)
+  let assinaturaUrl = null;
+  if (dados.assinatura) {
+    assinaturaUrl = await subirFotoParaStorage(dados.assinatura);
+  }
+
+  // Monta o registro a salvar (mapeando camelCase → snake_case do banco)
+  const registro = {
+    tipo_checklist: dados.tipoChecklist,
+    data: dados.data || new Date().toISOString(),
+    data_finalizacao: new Date().toISOString(),
+    equipe: dados.equipe || null,
+    liberado: dados.liberado || null,
+    observacao_geral: dados.observacaoGeral || null,
+    enviado: false,
+    // Equipamento
+    colaborador: dados.colaborador || null,
+    numero_equipamento: dados.numeroEquipamento || null,
+    tipo_equipamento: dados.tipoEquipamento || null,
+    // Veículo
+    motorista: dados.motorista || null,
+    marca: dados.marca || null,
+    modelo: dados.modelo || null,
+    placa: dados.placa || null,
+    tipo_veiculo: dados.tipoVeiculo || null,
+    tipo_veiculo_outros: dados.tipoVeiculoOutros || null,
+    nivel_combustivel: dados.nivelCombustivel || null,
+    local: dados.local || null,
+    avarias: dados.avarias || null,
+    // JSON
+    respostas: dados.respostas || {},
+    observacoes_itens: dados.observacoesItens || {},
+    fotos_itens: fotosItensUrls,
+    fotos: fotosUrls,
+    assinatura: assinaturaUrl,
+  };
+
+  const { data, error } = await supabaseClient
+    .from('checklists')
+    .insert(registro)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Erro ao salvar checklist:', error);
+    throw new Error('Não foi possível salvar o checklist: ' + error.message);
+  }
+
+  return data;
+}
+
+// Lista todos os checklists (mais recentes primeiro) - converte de snake_case → camelCase
+function converterDoBanco(linha) {
+  return {
+    id: linha.id,
+    tipoChecklist: linha.tipo_checklist,
+    data: linha.data,
+    dataFinalizacao: linha.data_finalizacao,
+    equipe: linha.equipe || '',
+    liberado: linha.liberado || '',
+    observacaoGeral: linha.observacao_geral || '',
+    enviado: !!linha.enviado,
+    colaborador: linha.colaborador || '',
+    numeroEquipamento: linha.numero_equipamento || '',
+    tipoEquipamento: linha.tipo_equipamento || '',
+    motorista: linha.motorista || '',
+    marca: linha.marca || '',
+    modelo: linha.modelo || '',
+    placa: linha.placa || '',
+    tipoVeiculo: linha.tipo_veiculo || '',
+    tipoVeiculoOutros: linha.tipo_veiculo_outros || '',
+    nivelCombustivel: linha.nivel_combustivel || '',
+    local: linha.local || '',
+    avarias: linha.avarias || '',
+    respostas: linha.respostas || {},
+    observacoesItens: linha.observacoes_itens || {},
+    fotosItens: linha.fotos_itens || {},
+    fotos: linha.fotos || [],
+    assinatura: linha.assinatura || null,
+  };
+}
+
+async function listarChecklistsDoSupabase() {
+  if (!supabaseClient) throw new Error('Supabase não inicializado');
+  const { data, error } = await supabaseClient
+    .from('checklists')
+    .select('*')
+    .order('data', { ascending: false });
+  if (error) {
+    console.error('Erro ao listar checklists:', error);
+    throw new Error('Não foi possível carregar os checklists: ' + error.message);
+  }
+  return (data || []).map(converterDoBanco);
+}
+
+async function apagarChecklistDoSupabase(id) {
+  if (!supabaseClient) throw new Error('Supabase não inicializado');
+  const { error } = await supabaseClient
+    .from('checklists')
+    .delete()
+    .eq('id', id);
+  if (error) {
+    console.error('Erro ao apagar checklist:', error);
+    throw new Error('Não foi possível apagar: ' + error.message);
+  }
+}
+
+async function apagarTodosChecklistsDoSupabase() {
+  if (!supabaseClient) throw new Error('Supabase não inicializado');
+  // Pra apagar todos, fazemos um delete com filtro que sempre é verdadeiro
+  const { error } = await supabaseClient
+    .from('checklists')
+    .delete()
+    .gte('id', 0);
+  if (error) {
+    console.error('Erro ao apagar todos:', error);
+    throw new Error('Não foi possível apagar todos: ' + error.message);
+  }
+}
+
+// Inscreve em mudanças em tempo real (insert, update, delete) na tabela checklists
+function escutarMudancasEmTempoReal(callback) {
+  if (!supabaseClient) return null;
+  const canal = supabaseClient
+    .channel('checklists-changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'checklists' }, () => {
+      callback();
+    })
+    .subscribe();
+  return canal;
+}
+
+
+// Assinatura fake (rabisco SVG simples) usada nos mocks enriquecidos
+const ASSINATURA_FAKE = 'data:image/svg+xml;base64,' + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="300" height="100" viewBox="0 0 300 100"><path d="M10 70 Q 30 20, 60 50 T 110 60 Q 130 40, 160 55 T 220 50 Q 250 70, 290 45" stroke="#1a1a2e" stroke-width="2.5" fill="none" stroke-linecap="round"/></svg>`);
+
+// Foto placeholder simples (1x1 cinza claro, base64) — só pra mostrar que existe foto
+const FOTO_PLACEHOLDER = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+// Mocks - 6 checklists fictícios pra demonstrar a tela do admin
+function gerarMocks() {
+  const hoje = new Date();
+  const ontem = new Date(hoje.getTime() - 24 * 60 * 60 * 1000);
+  const semanaPassada = new Date(hoje.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const duasSemanas = new Date(hoje.getTime() - 14 * 24 * 60 * 60 * 1000);
+
+  // Respostas fake pra um martelete (18 itens) - tudo conforme
+  const respostasMarteleteOK = {};
+  for (let i = 0; i < 18; i++) respostasMarteleteOK[i] = 'C';
+
+  // Respostas fake pra um gerador (alguns NC pra ficar realista)
+  const respostasGeradorComProblemas = {};
+  for (let i = 0; i < 18; i++) {
+    respostasGeradorComProblemas[i] = i === 3 || i === 7 ? 'NC' : 'C';
+  }
+
+  return [
+    // 1) Equipamento ENRIQUECIDO (com respostas, foto, assinatura)
+    {
+      id: 1001,
+      tipoChecklist: 'equipamento',
+      colaborador: 'João Silva',
+      equipe: 'Obra Civil 1',
+      data: hoje.toISOString(),
+      dataFinalizacao: hoje.toISOString(),
+      numeroEquipamento: 'EQ-4521',
+      tipoEquipamento: 'martelete',
+      fotos: [FOTO_PLACEHOLDER],
+      respostas: respostasMarteleteOK,
+      observacoesItens: {},
+      observacaoGeral: 'Equipamento em boas condições gerais. Inspeção sem ressalvas.',
+      liberado: 'sim',
+      assinatura: ASSINATURA_FAKE,
+      enviado: true,
+    },
+    // 2) Veículo (simples, só dados básicos)
+    {
+      id: 1002,
+      tipoChecklist: 'veiculo',
+      motorista: 'Carlos Mendes',
+      equipe: 'Logística',
+      data: hoje.toISOString(),
+      dataFinalizacao: hoje.toISOString(),
+      marca: 'Volkswagen',
+      modelo: 'Delivery 9.170',
+      placa: 'RKO2H45',
+      tipoVeiculo: 'caminhao_carroceria',
+      nivelCombustivel: '3/4',
+      local: LOCAL_FIXO,
+      fotos: [],
+      fotosItens: {},
+      respostas: {},
+      observacoesItens: {},
+      observacaoGeral: '',
+      avarias: 'Pequeno arranhão no para-choque dianteiro.',
+      liberado: 'sim',
+      assinatura: null,
+      enviado: true,
+    },
+    // 3) Equipamento ENRIQUECIDO (com NCs - bloqueado)
+    {
+      id: 1003,
+      tipoChecklist: 'equipamento',
+      colaborador: 'Pedro Santos',
+      equipe: 'Manutenção',
+      data: ontem.toISOString(),
+      dataFinalizacao: ontem.toISOString(),
+      numeroEquipamento: 'EQ-2087',
+      tipoEquipamento: 'gerador',
+      fotos: [FOTO_PLACEHOLDER, FOTO_PLACEHOLDER],
+      respostas: respostasGeradorComProblemas,
+      observacoesItens: {
+        3: 'Vazamento detectado',
+        7: 'Cabo com isolamento danificado',
+      },
+      observacaoGeral: 'Vazamento detectado na válvula de pressão. Manutenção necessária antes do próximo uso.',
+      liberado: 'nao',
+      assinatura: ASSINATURA_FAKE,
+      enviado: true,
+    },
+    // 4) Veículo (simples)
+    {
+      id: 1004,
+      tipoChecklist: 'veiculo',
+      motorista: 'Ana Oliveira',
+      equipe: 'Obra Civil 2',
+      data: ontem.toISOString(),
+      dataFinalizacao: ontem.toISOString(),
+      marca: 'Fiat',
+      modelo: 'Strada',
+      placa: 'PXA9C12',
+      tipoVeiculo: 'strada',
+      nivelCombustivel: '1/2',
+      local: LOCAL_FIXO,
+      fotos: [],
+      fotosItens: {},
+      respostas: {},
+      observacoesItens: {},
+      observacaoGeral: 'Necessário trocar pneu dianteiro direito (desgaste irregular).',
+      avarias: '',
+      liberado: 'parcial',
+      assinatura: null,
+      enviado: true,
+    },
+    // 5) Equipamento (simples)
+    {
+      id: 1005,
+      tipoChecklist: 'equipamento',
+      colaborador: 'Roberto Lima',
+      equipe: 'Obra Civil 1',
+      data: semanaPassada.toISOString(),
+      dataFinalizacao: semanaPassada.toISOString(),
+      numeroEquipamento: 'EQ-3344',
+      tipoEquipamento: 'prancha',
+      fotos: [],
+      respostas: {},
+      observacoesItens: {},
+      observacaoGeral: '',
+      liberado: 'sim',
+      assinatura: null,
+      enviado: true,
+    },
+    // 6) Veículo (simples)
+    {
+      id: 1006,
+      tipoChecklist: 'veiculo',
+      motorista: 'Fernanda Costa',
+      equipe: 'Administrativo',
+      data: duasSemanas.toISOString(),
+      dataFinalizacao: duasSemanas.toISOString(),
+      marca: 'Kia',
+      modelo: 'Bongo',
+      placa: 'QXT5B87',
+      tipoVeiculo: 'kia_bongo',
+      nivelCombustivel: '1/4',
+      local: LOCAL_FIXO,
+      fotos: [],
+      fotosItens: {},
+      respostas: {},
+      observacoesItens: {},
+      observacaoGeral: '',
+      avarias: 'Farol direito queimado.',
+      liberado: 'nao',
+      assinatura: null,
+      enviado: true,
+    },
+  ];
+}
+
 function ChecklistAxialApp() {
-  const [tela, setTela] = useState('home');
+  const [tela, setTela] = useState('login');
   const [tipoChecklist, setTipoChecklist] = useState(null); // 'equipamento' ou 'veiculo'
   const [historico, setHistorico] = useState([]);
 
+  // Admin
+  const [modoAdmin, setModoAdmin] = useState(false);
+  const [checklistsAdmin, setChecklistsAdmin] = useState(USAR_MOCKS ? gerarMocks() : []);
+  const [carregandoChecklists, setCarregandoChecklists] = useState(false);
+  const [erroChecklists, setErroChecklists] = useState(null);
+  const [checklistSelecionado, setChecklistSelecionado] = useState(null);
+
   const [dados, setDados] = useState(estadoInicialEquipamento());
+
+  // Carrega checklists do Supabase ao entrar no modo admin
+  // e fica escutando mudanças em tempo real
+  useEffect(() => {
+    if (!modoAdmin || USAR_MOCKS) return;
+
+    let canalRealtime = null;
+    let ativo = true;
+
+    async function carregar() {
+      setCarregandoChecklists(true);
+      setErroChecklists(null);
+      try {
+        const lista = await listarChecklistsDoSupabase();
+        if (ativo) {
+          setChecklistsAdmin(lista);
+          setCarregandoChecklists(false);
+        }
+      } catch (e) {
+        console.error('Falha ao carregar checklists:', e);
+        if (ativo) {
+          setErroChecklists(e.message || 'Erro desconhecido');
+          setCarregandoChecklists(false);
+        }
+      }
+    }
+
+    carregar();
+
+    // Real-time: recarrega lista quando houver INSERT/UPDATE/DELETE
+    canalRealtime = escutarMudancasEmTempoReal(() => {
+      carregar();
+    });
+
+    return () => {
+      ativo = false;
+      if (canalRealtime && supabaseClient) {
+        supabaseClient.removeChannel(canalRealtime);
+      }
+    };
+  }, [modoAdmin]);
 
   function estadoInicialEquipamento() {
     return {
@@ -449,7 +888,62 @@ function ChecklistAxialApp() {
   function voltarHome() {
     setDados(estadoInicialEquipamento());
     setTipoChecklist(null);
+    // Se está no modo admin, volta pro dashboard. Senão volta pra home do colaborador.
+    setTela(modoAdmin ? 'admin_dashboard' : 'home');
+  }
+
+  function fazerLogout() {
+    setModoAdmin(false);
+    setChecklistSelecionado(null);
+    setDados(estadoInicialEquipamento());
+    setTipoChecklist(null);
+    setTela('login');
+  }
+
+  function entrarComoColaborador() {
+    setModoAdmin(false);
     setTela('home');
+  }
+
+  function entrarComoAdmin(senha) {
+    if (senha === SENHA_ADMIN) {
+      setModoAdmin(true);
+      setTela('admin_dashboard');
+      return true;
+    }
+    return false;
+  }
+
+  async function adminApagarChecklist(id) {
+    if (USAR_MOCKS) {
+      setChecklistsAdmin(prev => prev.filter(c => c.id !== id));
+      return;
+    }
+    try {
+      await apagarChecklistDoSupabase(id);
+      // Atualização otimista (a tela atualiza imediatamente, o real-time faria depois também)
+      setChecklistsAdmin(prev => prev.filter(c => c.id !== id));
+    } catch (e) {
+      alert('Não foi possível apagar o checklist.\n\n' + (e.message || ''));
+    }
+  }
+
+  async function adminApagarTodos() {
+    if (USAR_MOCKS) {
+      setChecklistsAdmin([]);
+      return;
+    }
+    try {
+      await apagarTodosChecklistsDoSupabase();
+      setChecklistsAdmin([]);
+    } catch (e) {
+      alert('Não foi possível apagar todos os checklists.\n\n' + (e.message || ''));
+    }
+  }
+
+  function adminVerDetalhes(checklist) {
+    setChecklistSelecionado(checklist);
+    setTela('admin_detalhes');
   }
 
   function salvarNoHistorico(dadosFinal) {
@@ -486,8 +980,32 @@ function ChecklistAxialApp() {
         input:focus, textarea:focus, select:focus { outline: 2px solid ${COLORS.accent}; outline-offset: 1px; }
       `}</style>
 
+      {tela === 'login' && (
+        <TelaLogin
+          onColaborador={entrarComoColaborador}
+          onAdmin={entrarComoAdmin}
+        />
+      )}
+      {tela === 'admin_dashboard' && (
+        <TelaAdminDashboard
+          checklists={checklistsAdmin}
+          carregando={carregandoChecklists}
+          erro={erroChecklists}
+          onVerDetalhes={adminVerDetalhes}
+          onApagar={adminApagarChecklist}
+          onApagarTodos={adminApagarTodos}
+          onLogout={fazerLogout}
+        />
+      )}
+      {tela === 'admin_detalhes' && checklistSelecionado && (
+        <TelaFinalizado
+          dados={checklistSelecionado}
+          onVoltar={() => { setChecklistSelecionado(null); setTela('admin_dashboard'); }}
+          modoAdmin={true}
+        />
+      )}
       {tela === 'home' && (
-        <TelaHome onNovo={novoChecklist} historico={historico} />
+        <TelaHome onNovo={novoChecklist} historico={historico} onLogout={fazerLogout} />
       )}
       {tela === 'selecionar_tipo' && (
         <TelaSelecionarTipo
@@ -555,10 +1073,24 @@ function ChecklistAxialApp() {
         <TelaAssinatura
           dados={dados}
           setDados={setDados}
-          onFinalizar={(dadosFinal) => {
-            const id = salvarNoHistorico(dadosFinal);
-            setDados({ ...dadosFinal, id });
+          onFinalizar={async (dadosFinal) => {
+            const idLocal = salvarNoHistorico(dadosFinal);
+            setDados({ ...dadosFinal, id: idLocal });
             setTela('finalizado');
+
+            // Salva no Supabase em background (não bloqueia a tela "Finalizado")
+            if (!USAR_MOCKS && supabaseClient) {
+              try {
+                await salvarChecklistNoSupabase(dadosFinal);
+              } catch (e) {
+                console.error('Erro ao salvar no Supabase:', e);
+                alert(
+                  'O checklist foi finalizado e o PDF está pronto, mas houve um erro ao salvar no servidor.\n\n' +
+                  'Detalhes: ' + (e.message || 'desconhecido') + '\n\n' +
+                  'Você ainda pode baixar o PDF e compartilhar pelo WhatsApp normalmente.'
+                );
+              }
+            }
           }}
           onVoltar={() => setTela('observacoes')}
         />
@@ -761,7 +1293,7 @@ function BarraInferior({ children }) {
 // TELA 1: HOME
 // ============================================================
 
-function TelaHome({ onNovo, historico }) {
+function TelaHome({ onNovo, historico, onLogout }) {
   const [filtroData, setFiltroData] = useState('');
   const [filtroEquipe, setFiltroEquipe] = useState('');
   const [filtroEquip, setFiltroEquip] = useState('');
@@ -784,6 +1316,31 @@ function TelaHome({ onNovo, historico }) {
         position: 'relative',
         overflow: 'hidden',
       }}>
+        {/* Botão Sair no canto */}
+        {onLogout && (
+          <button
+            onClick={onLogout}
+            style={{
+              position: 'absolute',
+              top: 16,
+              right: 16,
+              background: 'rgba(255,255,255,0.15)',
+              border: '1px solid rgba(255,255,255,0.3)',
+              color: 'white',
+              padding: '8px 14px',
+              borderRadius: 8,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: 12,
+              fontWeight: 600,
+              zIndex: 2,
+            }}
+          >
+            <LogOut size={14} /> Sair
+          </button>
+        )}
         {/* Padrão decorativo */}
         <div style={{
           position: 'absolute',
@@ -2269,6 +2826,241 @@ async function gerarPDF(dados) {
   return gerarPDFEquipamento(dados);
 }
 
+// ============================================================
+// PDF DE RELATÓRIO CONSOLIDADO (lista de vários checklists para o admin)
+// ============================================================
+async function gerarPDFRelatorioConsolidado(checklists, filtros) {
+  const jsPDF = await carregarJsPDF();
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 40;
+  let y = margin;
+
+  function novaPagina() {
+    doc.addPage();
+    y = margin;
+    desenharCabecalho(true);
+  }
+
+  function desenharCabecalho(continuacao) {
+    // Faixa azul
+    doc.setFillColor(11, 37, 69);
+    doc.rect(0, 0, pageW, 90, 'F');
+    doc.setFillColor(46, 139, 192);
+    doc.rect(0, 90, pageW, 4, 'F');
+
+    try {
+      doc.addImage(LOGO_AXIAL, 'PNG', margin, 22, 130, 47);
+    } catch (e) {
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(20);
+      doc.setFont('helvetica', 'bold');
+      doc.text('AXIAL', margin, 55);
+    }
+
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'normal');
+    doc.text('CONSTRUTORA AXIAL', pageW - margin, 35, { align: 'right' });
+    doc.setFontSize(14);
+    doc.setFont('helvetica', 'bold');
+    doc.text('Relatório Consolidado', pageW - margin, 56, { align: 'right' });
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    doc.text(continuacao ? 'Continuação' : 'Checklists realizados', pageW - margin, 75, { align: 'right' });
+
+    y = 120;
+  }
+
+  function desenharRodape() {
+    const total = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= total; i++) {
+      doc.setPage(i);
+      doc.setDrawColor(229, 231, 235);
+      doc.setLineWidth(0.5);
+      doc.line(margin, pageH - 35, pageW - margin, pageH - 35);
+      doc.setTextColor(120, 120, 120);
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'normal');
+      doc.text(
+        'Construtora Axial · Relatório Consolidado · Documento gerado eletronicamente',
+        margin, pageH - 22
+      );
+      doc.text(`Página ${i} de ${total}`, pageW - margin, pageH - 22, { align: 'right' });
+    }
+  }
+
+  desenharCabecalho(false);
+
+  // ===== Bloco "Dados do Relatório" =====
+  doc.setTextColor(11, 37, 69);
+  doc.setFontSize(11);
+  doc.setFont('helvetica', 'bold');
+  doc.text('INFORMAÇÕES DO RELATÓRIO', margin, y);
+  y += 16;
+
+  doc.setTextColor(60, 60, 60);
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'normal');
+  const agora = new Date();
+  doc.text(`Data de geração: ${agora.toLocaleString('pt-BR')}`, margin, y);
+  y += 12;
+  doc.text(`Total de registros: ${checklists.length}`, margin, y);
+  y += 12;
+  if (filtros && (filtros.busca || filtros.tipo !== 'todos' || filtros.status !== 'todos' || filtros.data)) {
+    const partes = [];
+    if (filtros.busca) partes.push(`Busca: "${filtros.busca}"`);
+    if (filtros.tipo !== 'todos') partes.push(`Tipo: ${filtros.tipo}`);
+    if (filtros.status !== 'todos') {
+      const stMap = { sim: 'Liberado', nao: 'Não liberado', parcial: 'Com ressalvas' };
+      partes.push(`Status: ${stMap[filtros.status] || filtros.status}`);
+    }
+    if (filtros.data) partes.push(`Data: ${filtros.data}`);
+    doc.text(`Filtros aplicados: ${partes.join(' · ')}`, margin, y);
+    y += 12;
+  }
+  y += 8;
+
+  // ===== Totalizadores =====
+  const totais = {
+    total: checklists.length,
+    liberados: checklists.filter(c => c.liberado === 'sim').length,
+    bloqueados: checklists.filter(c => c.liberado === 'nao').length,
+    parciais: checklists.filter(c => c.liberado === 'parcial').length,
+  };
+
+  const boxW = (pageW - 2 * margin - 24) / 4;
+  const boxH = 50;
+  const boxes = [
+    { label: 'TOTAL', valor: totais.total, cor: [11, 37, 69] },
+    { label: 'LIBERADOS', valor: totais.liberados, cor: [16, 185, 129] },
+    { label: 'BLOQUEADOS', valor: totais.bloqueados, cor: [239, 68, 68] },
+    { label: 'C/ RESSALVAS', valor: totais.parciais, cor: [245, 158, 11] },
+  ];
+  boxes.forEach((b, i) => {
+    const x = margin + i * (boxW + 8);
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(229, 231, 235);
+    doc.roundedRect(x, y, boxW, boxH, 4, 4, 'FD');
+    doc.setTextColor(...b.cor);
+    doc.setFontSize(20);
+    doc.setFont('helvetica', 'bold');
+    doc.text(String(b.valor), x + boxW / 2, y + 25, { align: 'center' });
+    doc.setTextColor(100, 116, 139);
+    doc.setFontSize(7);
+    doc.setFont('helvetica', 'bold');
+    doc.text(b.label, x + boxW / 2, y + 40, { align: 'center' });
+  });
+  y += boxH + 20;
+
+  // ===== Tabela =====
+  doc.setTextColor(11, 37, 69);
+  doc.setFontSize(11);
+  doc.setFont('helvetica', 'bold');
+  doc.text('LISTA DE CHECKLISTS', margin, y);
+  y += 14;
+
+  // Cabeçalho da tabela
+  const colWidths = [55, 60, 95, 80, 130, 75]; // Data, Tipo, Responsável, Equipe, Identificação, Status
+  const headers = ['Data', 'Tipo', 'Responsável', 'Equipe', 'Identificação', 'Status'];
+  const tableX = margin;
+  let cx = tableX;
+
+  doc.setFillColor(11, 37, 69);
+  doc.rect(tableX, y, pageW - 2 * margin, 22, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(8);
+  doc.setFont('helvetica', 'bold');
+  headers.forEach((h, i) => {
+    doc.text(h, cx + 6, y + 14);
+    cx += colWidths[i];
+  });
+  y += 22;
+
+  // Linhas
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(40, 40, 40);
+
+  checklists.forEach((c, idx) => {
+    if (y > pageH - 60) {
+      novaPagina();
+      // Redesenha cabeçalho da tabela na nova página
+      doc.setFillColor(11, 37, 69);
+      doc.rect(tableX, y, pageW - 2 * margin, 22, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'bold');
+      cx = tableX;
+      headers.forEach((h, i) => {
+        doc.text(h, cx + 6, y + 14);
+        cx += colWidths[i];
+      });
+      y += 22;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(40, 40, 40);
+    }
+
+    // Zebra
+    if (idx % 2 === 1) {
+      doc.setFillColor(248, 250, 252);
+      doc.rect(tableX, y, pageW - 2 * margin, 24, 'F');
+    }
+
+    const ehVeic = c.tipoChecklist === 'veiculo';
+    const nome = ehVeic ? (c.motorista || '-') : (c.colaborador || '-');
+    const ident = ehVeic
+      ? `${[c.marca, c.modelo].filter(Boolean).join(' ')} · ${(c.placa || '').toUpperCase() || '-'}`
+      : (() => {
+          const eq = EQUIPAMENTOS[c.tipoEquipamento];
+          return `${eq?.nome || c.tipoEquipamento || '-'} · ${c.numeroEquipamento || '-'}`;
+        })();
+    const dataFmt = new Date(c.data).toLocaleDateString('pt-BR');
+    const tipoLabel = ehVeic ? 'Veículo' : 'Equipam.';
+
+    function corta(txt, max) {
+      txt = String(txt);
+      return txt.length > max ? txt.slice(0, max - 1) + '…' : txt;
+    }
+
+    cx = tableX;
+    doc.setTextColor(40, 40, 40);
+    doc.text(dataFmt, cx + 6, y + 15); cx += colWidths[0];
+    doc.text(tipoLabel, cx + 6, y + 15); cx += colWidths[1];
+    doc.text(corta(nome, 18), cx + 6, y + 15); cx += colWidths[2];
+    doc.text(corta(c.equipe || '-', 16), cx + 6, y + 15); cx += colWidths[3];
+    doc.text(corta(ident, 28), cx + 6, y + 15); cx += colWidths[4];
+
+    // Status com badge colorido
+    const statusInfo = c.liberado === 'sim'
+      ? { cor: [16, 185, 129], label: 'Liberado' }
+      : c.liberado === 'nao'
+      ? { cor: [239, 68, 68], label: 'Bloqueado' }
+      : { cor: [245, 158, 11], label: 'Ressalvas' };
+    doc.setFillColor(...statusInfo.cor);
+    doc.roundedRect(cx + 4, y + 6, colWidths[5] - 10, 13, 2, 2, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7);
+    doc.text(statusInfo.label, cx + 4 + (colWidths[5] - 10) / 2, y + 15, { align: 'center' });
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+
+    // Linha divisória sutil
+    doc.setDrawColor(229, 231, 235);
+    doc.setLineWidth(0.3);
+    doc.line(tableX, y + 24, tableX + (pageW - 2 * margin), y + 24);
+
+    y += 24;
+  });
+
+  desenharRodape();
+
+  return doc.output('blob');
+}
+
 async function gerarPDFEquipamento(dados) {
   const jsPDF = await carregarJsPDF();
   const doc = new jsPDF({ unit: 'pt', format: 'a4' });
@@ -2576,12 +3368,27 @@ async function gerarPDFEquipamento(dados) {
 // TELA 7: FINALIZADO (Compartilhamento)
 // ============================================================
 
-function TelaFinalizado({ dados, onVoltar, onMarcarEnviado }) {
+function TelaFinalizado({ dados, onVoltar, onMarcarEnviado, modoAdmin }) {
   const isVeic = dados.tipoChecklist === 'veiculo';
   const equip = isVeic
     ? TIPOS_VEICULOS[dados.tipoVeiculo] || { nome: 'Veículo', icone: '🚗' }
     : EQUIPAMENTOS[dados.tipoEquipamento];
   const [statusEnvio, setStatusEnvio] = useState(dados.enviado ? 'enviado' : 'pronto'); // pronto | enviando | enviado
+  const [pdfBlobLocal, setPdfBlobLocal] = useState(dados.pdfBlob || null);
+  const [gerandoPDF, setGerandoPDF] = useState(false);
+
+  // Se for admin abrindo um checklist que ainda não tem pdfBlob, gera on-the-fly
+  useEffect(() => {
+    if (modoAdmin && !pdfBlobLocal && !gerandoPDF) {
+      setGerandoPDF(true);
+      gerarPDF(dados)
+        .then(blob => { setPdfBlobLocal(blob); setGerandoPDF(false); })
+        .catch(e => {
+          console.error('Erro ao gerar PDF on-the-fly:', e);
+          setGerandoPDF(false);
+        });
+    }
+  }, [modoAdmin]);
 
   function nomeArquivo() {
     const data = new Date(dados.data);
@@ -2595,9 +3402,10 @@ function TelaFinalizado({ dados, onVoltar, onMarcarEnviado }) {
   }
 
   function baixarPDF() {
-    if (!dados.pdfBlob) return;
+    const blob = pdfBlobLocal || dados.pdfBlob;
+    if (!blob) return;
     try {
-      baixarOuAbrirPDF(dados.pdfBlob, nomeArquivo());
+      baixarOuAbrirPDF(blob, nomeArquivo());
     } catch (e) {
       console.error('Erro ao abrir PDF:', e);
       alert('Não foi possível abrir o PDF. Detalhes: ' + (e?.message || e));
@@ -2692,10 +3500,10 @@ function TelaFinalizado({ dados, onVoltar, onMarcarEnviado }) {
           <CheckCircle2 size={44} />
         </div>
         <h1 style={{ fontSize: 24, fontWeight: 800, margin: 0 }}>
-          Checklist Finalizado!
+          {modoAdmin ? 'Detalhes do Checklist' : 'Checklist Finalizado!'}
         </h1>
         <p style={{ fontSize: 14, margin: '8px 0 0', opacity: 0.85 }}>
-          PDF gerado com sucesso
+          {modoAdmin ? 'Visualização administrativa' : 'PDF gerado com sucesso'}
         </p>
       </div>
 
@@ -2791,8 +3599,16 @@ function TelaFinalizado({ dados, onVoltar, onMarcarEnviado }) {
         )}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: 20 }}>
-          <BotaoPrimario onClick={baixarPDF}>
-            <Download size={20} /> {ehIOS() ? 'Abrir PDF' : 'Baixar PDF'}
+          <BotaoPrimario onClick={baixarPDF} disabled={gerandoPDF || (!pdfBlobLocal && !dados.pdfBlob)}>
+            {gerandoPDF ? (
+              <>
+                <Spinner /> Gerando PDF...
+              </>
+            ) : (
+              <>
+                <Download size={20} /> {ehIOS() ? 'Abrir PDF' : 'Baixar PDF'}
+              </>
+            )}
           </BotaoPrimario>
 
           {ehIOS() && (
@@ -2809,7 +3625,7 @@ function TelaFinalizado({ dados, onVoltar, onMarcarEnviado }) {
             </div>
           )}
 
-          {statusEnvio !== 'enviado' && (
+          {!modoAdmin && statusEnvio !== 'enviado' && (
             <button
               onClick={enviarParaAdministrador}
               disabled={statusEnvio === 'enviando'}
@@ -2844,7 +3660,15 @@ function TelaFinalizado({ dados, onVoltar, onMarcarEnviado }) {
         </div>
 
         <BotaoSecundario onClick={onVoltar}>
-          <HomeIcon size={20} /> Voltar ao Início
+          {modoAdmin ? (
+            <>
+              <ChevronLeft size={20} /> Voltar à Lista
+            </>
+          ) : (
+            <>
+              <HomeIcon size={20} /> Voltar ao Início
+            </>
+          )}
         </BotaoSecundario>
       </Conteudo>
     </div>
@@ -4124,6 +4948,939 @@ function TelaErroFirebase({ mensagem }) {
       >
         <RotateCcw size={16} /> Tentar novamente
       </button>
+    </div>
+  );
+}
+
+
+// ============================================================
+// TELA: LOGIN (Colaborador ou Administrador)
+// ============================================================
+function TelaLogin({ onColaborador, onAdmin }) {
+  const [mostrarSenha, setMostrarSenha] = useState(false);
+  const [senha, setSenha] = useState('');
+  const [erroSenha, setErroSenha] = useState(false);
+
+  function tentarAdmin() {
+    const ok = onAdmin(senha);
+    if (!ok) {
+      setErroSenha(true);
+      setSenha('');
+    }
+  }
+
+  return (
+    <div className="fade-in" style={{
+      minHeight: '100vh',
+      display: 'flex',
+      flexDirection: 'column',
+      background: `linear-gradient(135deg, ${COLORS.primary} 0%, ${COLORS.primaryLight} 100%)`,
+    }}>
+      {/* Hero superior */}
+      <div style={{
+        padding: '60px 20px 40px',
+        color: COLORS.white,
+        position: 'relative',
+        overflow: 'hidden',
+        textAlign: 'center',
+      }}>
+        <div style={{
+          position: 'absolute',
+          top: -80, right: -80,
+          width: 220, height: 220, borderRadius: '50%',
+          background: 'rgba(46, 139, 192, 0.15)',
+        }} />
+        <div style={{
+          position: 'absolute',
+          bottom: -100, left: -100,
+          width: 280, height: 280, borderRadius: '50%',
+          background: 'rgba(46, 139, 192, 0.10)',
+        }} />
+
+        <div style={{ position: 'relative', maxWidth: 500, margin: '0 auto' }}>
+          <div style={{
+            background: COLORS.white,
+            borderRadius: '12px',
+            padding: '16px 24px',
+            display: 'inline-block',
+            marginBottom: 24,
+            boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+          }}>
+            <img src={LOGO_AXIAL} alt="Construtora Axial" style={{ height: 50, display: 'block' }} />
+          </div>
+          <div style={{
+            fontSize: 11, letterSpacing: 2, textTransform: 'uppercase',
+            opacity: 0.8, fontWeight: 600,
+          }}>
+            Segurança Operacional
+          </div>
+          <h1 style={{
+            fontSize: 28, fontWeight: 800, margin: '6px 0 0', letterSpacing: '-0.5px',
+          }}>
+            Checklist Axial
+          </h1>
+          <p style={{ margin: '8px 0 0', opacity: 0.85, fontSize: 15 }}>
+            Selecione seu perfil de acesso
+          </p>
+        </div>
+      </div>
+
+      {/* Cards de acesso */}
+      <div style={{
+        flex: 1,
+        background: COLORS.gray50,
+        borderTopLeftRadius: 24,
+        borderTopRightRadius: 24,
+        marginTop: -20,
+        padding: '32px 20px 40px',
+      }}>
+        <div style={{
+          maxWidth: 500,
+          margin: '0 auto',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 16,
+        }}>
+          {/* Card Colaborador */}
+          <button
+            onClick={onColaborador}
+            style={{
+              background: COLORS.white,
+              border: `2px solid ${COLORS.gray200}`,
+              borderRadius: 16,
+              padding: '24px 20px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 16,
+              textAlign: 'left',
+              transition: 'all 0.2s',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.borderColor = COLORS.accent;
+              e.currentTarget.style.boxShadow = '0 8px 24px rgba(46, 139, 192, 0.15)';
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.borderColor = COLORS.gray200;
+              e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.04)';
+            }}
+          >
+            <div style={{
+              width: 56, height: 56, borderRadius: 14,
+              background: `linear-gradient(135deg, ${COLORS.primary}, ${COLORS.primaryLight})`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'white', flexShrink: 0,
+            }}>
+              <ClipboardCheck size={28} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 17, fontWeight: 700, color: COLORS.gray900, marginBottom: 4 }}>
+                Colaborador
+              </div>
+              <div style={{ fontSize: 13, color: COLORS.gray600, lineHeight: 1.4 }}>
+                Preencher novo checklist de equipamento ou veículo
+              </div>
+            </div>
+            <ChevronRight size={22} color={COLORS.gray400} />
+          </button>
+
+          {/* Card Administrador */}
+          {!mostrarSenha ? (
+            <button
+              onClick={() => setMostrarSenha(true)}
+              style={{
+                background: COLORS.white,
+                border: `2px solid ${COLORS.gray200}`,
+                borderRadius: 16,
+                padding: '24px 20px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 16,
+                textAlign: 'left',
+                transition: 'all 0.2s',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+              }}
+              onMouseOver={(e) => {
+                e.currentTarget.style.borderColor = COLORS.accent;
+                e.currentTarget.style.boxShadow = '0 8px 24px rgba(46, 139, 192, 0.15)';
+              }}
+              onMouseOut={(e) => {
+                e.currentTarget.style.borderColor = COLORS.gray200;
+                e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.04)';
+              }}
+            >
+              <div style={{
+                width: 56, height: 56, borderRadius: 14,
+                background: `linear-gradient(135deg, #6366F1, #818CF8)`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: 'white', flexShrink: 0,
+              }}>
+                <Shield size={28} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 17, fontWeight: 700, color: COLORS.gray900, marginBottom: 4 }}>
+                  Administrador
+                </div>
+                <div style={{ fontSize: 13, color: COLORS.gray600, lineHeight: 1.4 }}>
+                  Visualizar e exportar todos os checklists realizados
+                </div>
+              </div>
+              <ChevronRight size={22} color={COLORS.gray400} />
+            </button>
+          ) : (
+            <div style={{
+              background: COLORS.white,
+              border: `2px solid #6366F1`,
+              borderRadius: 16,
+              padding: '24px 20px',
+              boxShadow: '0 8px 24px rgba(99, 102, 241, 0.15)',
+            }} className="fade-in">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                <div style={{
+                  width: 44, height: 44, borderRadius: 12,
+                  background: `linear-gradient(135deg, #6366F1, #818CF8)`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: 'white',
+                }}>
+                  <Lock size={22} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.gray900 }}>
+                    Acesso de Administrador
+                  </div>
+                  <div style={{ fontSize: 12, color: COLORS.gray600 }}>
+                    Digite a senha para continuar
+                  </div>
+                </div>
+                <button
+                  onClick={() => { setMostrarSenha(false); setSenha(''); setErroSenha(false); }}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: COLORS.gray500,
+                    cursor: 'pointer',
+                    padding: 4,
+                    display: 'flex',
+                  }}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <input
+                type="password"
+                value={senha}
+                onChange={(e) => { setSenha(e.target.value); setErroSenha(false); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') tentarAdmin(); }}
+                placeholder="Senha"
+                autoFocus
+                style={{
+                  width: '100%',
+                  padding: '14px 16px',
+                  borderRadius: 10,
+                  border: `1.5px solid ${erroSenha ? COLORS.danger : COLORS.gray300}`,
+                  fontSize: 16,
+                  outline: 'none',
+                  marginBottom: 8,
+                }}
+              />
+              {erroSenha && (
+                <div style={{ color: COLORS.danger, fontSize: 13, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <AlertCircle size={14} /> Senha incorreta
+                </div>
+              )}
+              <button
+                onClick={tentarAdmin}
+                style={{
+                  width: '100%',
+                  background: '#6366F1',
+                  color: 'white',
+                  border: 'none',
+                  padding: '14px 20px',
+                  borderRadius: 10,
+                  fontSize: 15,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                }}
+              >
+                Entrar como Administrador
+              </button>
+            </div>
+          )}
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// TELA: ADMIN DASHBOARD (lista de todos os checklists)
+// ============================================================
+function TelaAdminDashboard({ checklists, carregando, erro, onVerDetalhes, onApagar, onApagarTodos, onLogout }) {
+  const [busca, setBusca] = useState('');
+  const [filtroTipo, setFiltroTipo] = useState('todos'); // todos | equipamento | veiculo
+  const [filtroStatus, setFiltroStatus] = useState('todos'); // todos | sim | nao | parcial
+  const [filtroData, setFiltroData] = useState(''); // YYYY-MM-DD
+  const [gerandoPDFGeral, setGerandoPDFGeral] = useState(false);
+
+  function nomeDoResponsavel(c) {
+    return c.tipoChecklist === 'veiculo' ? (c.motorista || '-') : (c.colaborador || '-');
+  }
+
+  function identificacao(c) {
+    if (c.tipoChecklist === 'veiculo') {
+      const placa = (c.placa || '').toUpperCase();
+      return `${[c.marca, c.modelo].filter(Boolean).join(' ')} · ${placa || '-'}`;
+    }
+    return `${c.tipoEquipamento || '-'} · ${c.numeroEquipamento || '-'}`;
+  }
+
+  const filtrados = checklists.filter(c => {
+    if (filtroTipo !== 'todos' && c.tipoChecklist !== filtroTipo) return false;
+    if (filtroStatus !== 'todos' && c.liberado !== filtroStatus) return false;
+    if (filtroData && !c.data.startsWith(filtroData)) return false;
+    if (busca) {
+      const txt = busca.toLowerCase();
+      const conteudo = [
+        nomeDoResponsavel(c), c.equipe, identificacao(c),
+      ].join(' ').toLowerCase();
+      if (!conteudo.includes(txt)) return false;
+    }
+    return true;
+  });
+
+  function confirmarApagar(id) {
+    if (window.confirm('Tem certeza que deseja apagar este checklist? Esta ação não pode ser desfeita.')) {
+      onApagar(id);
+    }
+  }
+
+  function confirmarApagarTodos() {
+    if (checklists.length === 0) return;
+    if (window.confirm(`Tem certeza que deseja apagar TODOS os ${checklists.length} checklists? Esta ação não pode ser desfeita.`)) {
+      if (window.confirm('Confirma a exclusão de TODOS os registros?')) {
+        onApagarTodos();
+      }
+    }
+  }
+
+  function exportarCSV() {
+    if (checklists.length === 0) {
+      alert('Não há checklists para exportar.');
+      return;
+    }
+    const cabecalho = [
+      'ID', 'Tipo', 'Data', 'Responsável', 'Equipe', 'Identificação', 'Status', 'Observações', 'Avarias',
+    ];
+    const linhas = filtrados.map(c => [
+      c.id,
+      c.tipoChecklist === 'veiculo' ? 'Veículo' : 'Equipamento',
+      new Date(c.data).toLocaleString('pt-BR'),
+      nomeDoResponsavel(c),
+      c.equipe || '',
+      identificacao(c),
+      c.liberado === 'sim' ? 'Liberado' : c.liberado === 'nao' ? 'Não liberado' : c.liberado === 'parcial' ? 'Com ressalvas' : '-',
+      (c.observacaoGeral || '').replace(/\n/g, ' '),
+      (c.avarias || '').replace(/\n/g, ' '),
+    ]);
+    const csv = [cabecalho, ...linhas]
+      .map(linha => linha.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+    // BOM pra Excel reconhecer UTF-8
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const dt = new Date().toISOString().slice(0, 10);
+    a.download = `relatorio_checklists_${dt}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  async function exportarPDF() {
+    if (filtrados.length === 0) {
+      alert('Não há checklists para exportar.');
+      return;
+    }
+    if (gerandoPDFGeral) return;
+    setGerandoPDFGeral(true);
+    try {
+      const blob = await gerarPDFRelatorioConsolidado(filtrados, {
+        busca, tipo: filtroTipo, status: filtroStatus, data: filtroData,
+      });
+      const dt = new Date().toISOString().slice(0, 10);
+      baixarOuAbrirPDF(blob, `relatorio_checklists_${dt}.pdf`);
+    } catch (e) {
+      console.error('Erro ao gerar PDF consolidado:', e);
+      alert('Não foi possível gerar o PDF.\n\nDetalhes: ' + (e?.message || String(e)));
+    } finally {
+      setGerandoPDFGeral(false);
+    }
+  }
+
+  return (
+    <div className="fade-in">
+      {/* Header */}
+      <div style={{
+        background: `linear-gradient(135deg, #6366F1 0%, #818CF8 100%)`,
+        padding: '24px 20px 32px',
+        color: 'white',
+        position: 'relative',
+        overflow: 'hidden',
+      }}>
+        <div style={{
+          position: 'absolute', top: -60, right: -60,
+          width: 200, height: 200, borderRadius: '50%',
+          background: 'rgba(255,255,255,0.08)',
+        }} />
+        <div style={{ maxWidth: 1100, margin: '0 auto', position: 'relative' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{
+                width: 44, height: 44, borderRadius: 12,
+                background: 'rgba(255,255,255,0.2)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <Shield size={24} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, letterSpacing: 1.2, textTransform: 'uppercase', opacity: 0.85, fontWeight: 600 }}>
+                  Área Administrativa
+                </div>
+                <div style={{ fontSize: 20, fontWeight: 800, marginTop: 2 }}>
+                  Dashboard
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={onLogout}
+              style={{
+                background: 'rgba(255,255,255,0.15)',
+                border: '1px solid rgba(255,255,255,0.3)',
+                color: 'white',
+                padding: '8px 14px',
+                borderRadius: 8,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 13,
+                fontWeight: 600,
+              }}
+            >
+              <LogOut size={14} /> Sair
+            </button>
+          </div>
+
+          {/* Mini stats */}
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{
+              background: 'rgba(255,255,255,0.15)',
+              padding: '10px 16px',
+              borderRadius: 10,
+              border: '1px solid rgba(255,255,255,0.2)',
+            }}>
+              <div style={{ fontSize: 11, opacity: 0.85, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1 }}>Total</div>
+              <div style={{ fontSize: 22, fontWeight: 800 }}>{checklists.length}</div>
+            </div>
+            <div style={{
+              background: 'rgba(255,255,255,0.15)',
+              padding: '10px 16px',
+              borderRadius: 10,
+              border: '1px solid rgba(255,255,255,0.2)',
+            }}>
+              <div style={{ fontSize: 11, opacity: 0.85, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1 }}>Liberados</div>
+              <div style={{ fontSize: 22, fontWeight: 800 }}>{checklists.filter(c => c.liberado === 'sim').length}</div>
+            </div>
+            <div style={{
+              background: 'rgba(255,255,255,0.15)',
+              padding: '10px 16px',
+              borderRadius: 10,
+              border: '1px solid rgba(255,255,255,0.2)',
+            }}>
+              <div style={{ fontSize: 11, opacity: 0.85, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1 }}>Bloqueados</div>
+              <div style={{ fontSize: 22, fontWeight: 800 }}>{checklists.filter(c => c.liberado === 'nao').length}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 1100, margin: '0 auto', padding: '20px' }}>
+        {/* Ações */}
+        <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
+          <button
+            onClick={exportarCSV}
+            style={{
+              flex: 1, minWidth: 180,
+              background: COLORS.success,
+              color: 'white',
+              border: 'none',
+              padding: '12px 20px',
+              borderRadius: 10,
+              fontSize: 14,
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8,
+              boxShadow: '0 2px 8px rgba(16, 185, 129, 0.25)',
+            }}
+          >
+            <Download size={18} /> Exportar CSV ({filtrados.length})
+          </button>
+          <button
+            onClick={exportarPDF}
+            disabled={gerandoPDFGeral || filtrados.length === 0}
+            style={{
+              flex: 1, minWidth: 180,
+              background: gerandoPDFGeral ? COLORS.gray300 : COLORS.primary,
+              color: 'white',
+              border: 'none',
+              padding: '12px 20px',
+              borderRadius: 10,
+              fontSize: 14,
+              fontWeight: 700,
+              cursor: gerandoPDFGeral ? 'wait' : (filtrados.length === 0 ? 'not-allowed' : 'pointer'),
+              opacity: filtrados.length === 0 ? 0.6 : 1,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8,
+              boxShadow: gerandoPDFGeral ? 'none' : '0 2px 8px rgba(11, 37, 69, 0.25)',
+            }}
+          >
+            {gerandoPDFGeral ? (
+              <>
+                <Spinner /> Gerando PDF...
+              </>
+            ) : (
+              <>
+                <FileText size={18} /> Exportar PDF ({filtrados.length})
+              </>
+            )}
+          </button>
+          <button
+            onClick={confirmarApagarTodos}
+            disabled={checklists.length === 0}
+            style={{
+              background: checklists.length === 0 ? COLORS.gray200 : COLORS.danger,
+              color: checklists.length === 0 ? COLORS.gray500 : 'white',
+              border: 'none',
+              padding: '12px 20px',
+              borderRadius: 10,
+              fontSize: 14,
+              fontWeight: 700,
+              cursor: checklists.length === 0 ? 'not-allowed' : 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8,
+            }}
+          >
+            <Trash2 size={18} /> Apagar Todos
+          </button>
+        </div>
+
+        {/* Filtros */}
+        <div style={{
+          background: COLORS.white,
+          border: `1px solid ${COLORS.gray200}`,
+          borderRadius: 12,
+          padding: 16,
+          marginBottom: 16,
+        }}>
+          <div style={{ position: 'relative', marginBottom: 12 }}>
+            <Search size={18} color={COLORS.gray500} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)' }} />
+            <input
+              type="text"
+              value={busca}
+              onChange={(e) => setBusca(e.target.value)}
+              placeholder="Buscar por nome, equipe, equipamento, placa..."
+              style={{
+                width: '100%',
+                padding: '12px 16px 12px 40px',
+                borderRadius: 10,
+                border: `1.5px solid ${COLORS.gray300}`,
+                fontSize: 14,
+                outline: 'none',
+              }}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <select
+              value={filtroTipo}
+              onChange={(e) => setFiltroTipo(e.target.value)}
+              style={{
+                padding: '10px 14px',
+                borderRadius: 8,
+                border: `1.5px solid ${COLORS.gray300}`,
+                fontSize: 13,
+                background: 'white',
+                cursor: 'pointer',
+              }}
+            >
+              <option value="todos">Todos os tipos</option>
+              <option value="equipamento">🔧 Equipamento</option>
+              <option value="veiculo">🚗 Veículo</option>
+            </select>
+            <select
+              value={filtroStatus}
+              onChange={(e) => setFiltroStatus(e.target.value)}
+              style={{
+                padding: '10px 14px',
+                borderRadius: 8,
+                border: `1.5px solid ${COLORS.gray300}`,
+                fontSize: 13,
+                background: 'white',
+                cursor: 'pointer',
+              }}
+            >
+              <option value="todos">Todos os status</option>
+              <option value="sim">✅ Liberado</option>
+              <option value="nao">❌ Não liberado</option>
+              <option value="parcial">⚠️ Com ressalvas</option>
+            </select>
+            <input
+              type="date"
+              value={filtroData}
+              onChange={(e) => setFiltroData(e.target.value)}
+              style={{
+                padding: '10px 14px',
+                borderRadius: 8,
+                border: `1.5px solid ${COLORS.gray300}`,
+                fontSize: 13,
+                background: 'white',
+              }}
+            />
+            {(busca || filtroTipo !== 'todos' || filtroStatus !== 'todos' || filtroData) && (
+              <button
+                onClick={() => { setBusca(''); setFiltroTipo('todos'); setFiltroStatus('todos'); setFiltroData(''); }}
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: 8,
+                  border: `1.5px solid ${COLORS.gray300}`,
+                  background: 'white',
+                  cursor: 'pointer',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: COLORS.gray700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                }}
+              >
+                <X size={14} /> Limpar
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Lista */}
+        {carregando ? (
+          <div style={{
+            background: COLORS.white,
+            border: `1px solid ${COLORS.gray200}`,
+            borderRadius: 12,
+            padding: '40px 20px',
+            textAlign: 'center',
+            color: COLORS.gray600,
+          }}>
+            <div style={{
+              width: 36, height: 36,
+              border: `3px solid ${COLORS.gray200}`,
+              borderTopColor: '#6366F1',
+              borderRadius: '50%',
+              margin: '0 auto 12px',
+              animation: 'spin 0.8s linear infinite',
+            }}>
+              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+            </div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>
+              Carregando checklists do servidor...
+            </div>
+          </div>
+        ) : erro ? (
+          <div style={{
+            background: '#FEF2F2',
+            border: `1px solid #FECACA`,
+            borderRadius: 12,
+            padding: '20px',
+            color: '#991B1B',
+          }}>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <AlertCircle size={22} color="#DC2626" style={{ flexShrink: 0, marginTop: 2 }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>
+                  Não foi possível carregar
+                </div>
+                <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+                  {erro}
+                </div>
+                <div style={{ fontSize: 12, marginTop: 8, color: '#7F1D1D' }}>
+                  Verifique sua conexão e tente sair e entrar novamente como administrador.
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : filtrados.length === 0 ? (
+          <div style={{
+            background: COLORS.white,
+            border: `1px dashed ${COLORS.gray300}`,
+            borderRadius: 12,
+            padding: '40px 20px',
+            textAlign: 'center',
+            color: COLORS.gray500,
+          }}>
+            <FileText size={40} color={COLORS.gray400} />
+            <div style={{ fontSize: 15, fontWeight: 600, marginTop: 12 }}>
+              Nenhum checklist encontrado
+            </div>
+            <div style={{ fontSize: 13, marginTop: 4 }}>
+              {checklists.length === 0 ? 'Nenhum checklist foi registrado ainda.' : 'Tente ajustar os filtros.'}
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {filtrados.map(c => (
+              <CardChecklistAdmin
+                key={c.id}
+                checklist={c}
+                onVer={() => onVerDetalhes(c)}
+                onApagar={() => confirmarApagar(c.id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CardChecklistAdmin({ checklist: c, onVer, onApagar }) {
+  const ehVeiculo = c.tipoChecklist === 'veiculo';
+  const nome = ehVeiculo ? (c.motorista || '-') : (c.colaborador || '-');
+  const ident = ehVeiculo
+    ? `${[c.marca, c.modelo].filter(Boolean).join(' ')} · ${(c.placa || '').toUpperCase() || '-'}`
+    : `${c.tipoEquipamento || '-'} · ${c.numeroEquipamento || '-'}`;
+  const dataFmt = new Date(c.data).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+  const statusInfo = c.liberado === 'sim'
+    ? { cor: COLORS.success, bg: '#ECFDF5', borda: '#A7F3D0', label: 'Liberado', icone: '✅' }
+    : c.liberado === 'nao'
+    ? { cor: COLORS.danger, bg: '#FEF2F2', borda: '#FECACA', label: 'Não liberado', icone: '❌' }
+    : { cor: COLORS.warning, bg: '#FFFBEB', borda: '#FDE68A', label: 'Com ressalvas', icone: '⚠️' };
+
+  return (
+    <div style={{
+      background: COLORS.white,
+      border: `1px solid ${COLORS.gray200}`,
+      borderRadius: 12,
+      padding: '14px 16px',
+      display: 'flex',
+      gap: 14,
+      alignItems: 'center',
+      boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+    }}>
+      <div style={{
+        width: 44, height: 44, borderRadius: 10,
+        background: ehVeiculo ? '#EFF6FF' : '#FEF3C7',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        flexShrink: 0,
+      }}>
+        {ehVeiculo ? <Truck size={22} color="#2563EB" /> : <Wrench size={22} color="#D97706" />}
+      </div>
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 15, fontWeight: 700, color: COLORS.gray900 }}>{nome}</span>
+          <span style={{ fontSize: 12, color: COLORS.gray500 }}>· {c.equipe || 'Sem equipe'}</span>
+        </div>
+        <div style={{ fontSize: 13, color: COLORS.gray700, marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {ident}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{
+            fontSize: 11, fontWeight: 700,
+            background: statusInfo.bg,
+            color: statusInfo.cor,
+            border: `1px solid ${statusInfo.borda}`,
+            padding: '2px 8px',
+            borderRadius: 6,
+          }}>
+            {statusInfo.icone} {statusInfo.label}
+          </span>
+          <span style={{ fontSize: 11, color: COLORS.gray500 }}>
+            {dataFmt}
+          </span>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+        <button
+          onClick={onVer}
+          title="Ver detalhes"
+          style={{
+            background: COLORS.primary,
+            color: 'white',
+            border: 'none',
+            padding: '8px 12px',
+            borderRadius: 8,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            fontSize: 12,
+            fontWeight: 600,
+          }}
+        >
+          <Eye size={14} /> Ver
+        </button>
+        <button
+          onClick={onApagar}
+          title="Apagar"
+          style={{
+            background: COLORS.white,
+            color: COLORS.danger,
+            border: `1.5px solid ${COLORS.danger}`,
+            padding: '8px 10px',
+            borderRadius: 8,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+          }}
+        >
+          <Trash2 size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// TELA: ADMIN DETALHES (visualizar 1 checklist específico)
+// ============================================================
+function TelaAdminDetalhes({ checklist: c, onVoltar }) {
+  const ehVeiculo = c.tipoChecklist === 'veiculo';
+  const nome = ehVeiculo ? (c.motorista || '-') : (c.colaborador || '-');
+  const dataFmt = new Date(c.data).toLocaleString('pt-BR');
+
+  const statusInfo = c.liberado === 'sim'
+    ? { cor: COLORS.success, bg: '#ECFDF5', label: '✅ Liberado' }
+    : c.liberado === 'nao'
+    ? { cor: COLORS.danger, bg: '#FEF2F2', label: '❌ Não liberado' }
+    : { cor: COLORS.warning, bg: '#FFFBEB', label: '⚠️ Com ressalvas' };
+
+  return (
+    <div className="fade-in">
+      <Header titulo="Detalhes do Checklist" onVoltar={onVoltar} />
+      <Conteudo>
+        {/* Card principal */}
+        <div style={{
+          background: COLORS.white,
+          borderRadius: 12,
+          border: `1px solid ${COLORS.gray200}`,
+          overflow: 'hidden',
+          marginBottom: 16,
+        }}>
+          <div style={{
+            background: statusInfo.bg,
+            padding: '16px 20px',
+            borderBottom: `1px solid ${COLORS.gray200}`,
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 8,
+          }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, color: COLORS.gray600 }}>
+                {ehVeiculo ? 'Checklist de Veículo' : 'Checklist de Equipamento'}
+              </div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.gray900, marginTop: 2 }}>
+                ID #{c.id}
+              </div>
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: statusInfo.cor }}>
+              {statusInfo.label}
+            </div>
+          </div>
+
+          <div style={{ padding: '20px' }}>
+            <CampoDetalhe label={ehVeiculo ? 'Motorista' : 'Colaborador'} valor={nome} />
+            <CampoDetalhe label="Equipe" valor={c.equipe || '-'} />
+            <CampoDetalhe label="Data" valor={dataFmt} />
+
+            {ehVeiculo ? (
+              <>
+                <CampoDetalhe label="Marca / Modelo" valor={[c.marca, c.modelo].filter(Boolean).join(' ') || '-'} />
+                <CampoDetalhe label="Placa" valor={(c.placa || '').toUpperCase() || '-'} />
+                <CampoDetalhe label="Tipo de Veículo" valor={c.tipoVeiculo || '-'} />
+                <CampoDetalhe label="Nível de Combustível" valor={c.nivelCombustivel || '-'} />
+                {c.avarias && <CampoDetalhe label="Avarias" valor={c.avarias} multilinha />}
+              </>
+            ) : (
+              <>
+                <CampoDetalhe label="Tipo de Equipamento" valor={c.tipoEquipamento || '-'} />
+                <CampoDetalhe label="Nº do Equipamento" valor={c.numeroEquipamento || '-'} />
+              </>
+            )}
+
+            {c.observacaoGeral && <CampoDetalhe label="Observação Geral" valor={c.observacaoGeral} multilinha />}
+          </div>
+        </div>
+
+        {/* Aviso */}
+        <div style={{
+          background: '#EFF6FF',
+          border: `1px solid #BFDBFE`,
+          borderRadius: 10,
+          padding: '12px 14px',
+          fontSize: 13,
+          color: '#1E40AF',
+          marginBottom: 16,
+          display: 'flex',
+          gap: 10,
+          alignItems: 'flex-start',
+        }}>
+          <AlertCircle size={18} color="#3B82F6" style={{ flexShrink: 0, marginTop: 1 }} />
+          <div>
+            <strong>Protótipo:</strong> Estes são dados fictícios para visualização. Quando integrado ao backend, esta tela mostrará as fotos, respostas item a item e assinatura digital do checklist real, com botão de exportar PDF individual.
+          </div>
+        </div>
+
+        <BotaoSecundario onClick={onVoltar}>
+          <ChevronLeft size={20} /> Voltar para a Lista
+        </BotaoSecundario>
+      </Conteudo>
+    </div>
+  );
+}
+
+function CampoDetalhe({ label, valor, multilinha }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.8, color: COLORS.gray500, marginBottom: 4 }}>
+        {label}
+      </div>
+      <div style={{
+        fontSize: 14,
+        color: COLORS.gray900,
+        fontWeight: 600,
+        whiteSpace: multilinha ? 'pre-wrap' : 'normal',
+        lineHeight: multilinha ? 1.5 : 1.4,
+      }}>
+        {valor}
+      </div>
     </div>
   );
 }
